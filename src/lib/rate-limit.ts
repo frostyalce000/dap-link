@@ -61,6 +61,8 @@ export const LIMITS = {
   chatPerSession: { limit: 40, windowSeconds: 10 * 60 },
   turnsPerSession: { limit: 200, windowSeconds: 10 * 60 },
   completePerSession: { limit: 10, windowSeconds: 60 * 60 },
-  completePerIp: { limit: 20, windowSeconds: 60 * 60 },
+  // Not tighter than the start limit: many real people can share one
+  // address (a mobile carrier, a campus), and each already needed a start.
+  completePerIp: { limit: 120, windowSeconds: 60 * 60 },
   authPerIp: { limit: 20, windowSeconds: 10 * 60 },
 } satisfies Record<string, RateLimitRule>;

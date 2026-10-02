@@ -6,8 +6,8 @@ A merchant creates a link for a product, picks a few questions and a reward, and
 
 | | |
 |---|---|
-| Live product | _added at deployment_ |
-| Example DAP Link | `/everyday-hoodie` on the live URL |
+| Live product | https://dap-link.vercel.app |
+| Example DAP Link | https://dap-link.vercel.app/everyday-hoodie |
 | Test merchant login | `demo@example.com` / `DapLink-Demo-2026` at `/login` |
 | Your own account | `/signup` (no email confirmation needed) |
 
