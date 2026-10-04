@@ -1,6 +1,7 @@
 import "server-only";
 import { asc, count, eq } from "drizzle-orm";
 import { db } from "@/db";
+import { describeError } from "@/db/errors";
 import { campaignInsights, campaigns, sessionInsights } from "@/db/schema";
 import { env } from "@/lib/env";
 import { generateStructured } from "@/lib/openai";
@@ -168,7 +169,7 @@ export async function refreshCampaignInsightsIfStale(campaignId: string): Promis
     await synthesizeCampaign(campaignId);
     return true;
   } catch (err) {
-    console.error("[analysis] campaign summary failed:", err instanceof Error ? err.message : "unknown");
+    console.error("[analysis] campaign summary failed:", describeError(err));
     return false;
   }
 }

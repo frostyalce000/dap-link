@@ -27,17 +27,21 @@ export async function generateStructured<T>(params: {
   user: string;
   parse: (value: unknown) => T;
 }): Promise<T> {
-  const completion = await openai().chat.completions.create({
-    model: params.model,
-    messages: [
-      { role: "system", content: params.system },
-      { role: "user", content: params.user },
-    ],
-    response_format: {
-      type: "json_schema",
-      json_schema: { name: params.name, strict: true, schema: params.schema },
+  // Sized to finish inside a 60-second serverless function, retry included.
+  const completion = await openai().chat.completions.create(
+    {
+      model: params.model,
+      messages: [
+        { role: "system", content: params.system },
+        { role: "user", content: params.user },
+      ],
+      response_format: {
+        type: "json_schema",
+        json_schema: { name: params.name, strict: true, schema: params.schema },
+      },
     },
-  });
+    { timeout: 25_000, maxRetries: 1 },
+  );
 
   const message = completion.choices[0]?.message;
   if (message?.refusal) throw new Error("Model declined to answer");

@@ -7,6 +7,7 @@ import { CONSENT_VERSION } from "@/lib/consent";
 import {
   RequestError,
   completeSession,
+  saveTurns,
   startSession,
   type RewardResult,
   type SessionHandle,
@@ -137,17 +138,32 @@ export function Experience(props: ExperienceProps) {
     }
   };
 
-  const switchToText = useCallback((turns: Turn[], message: string | null) => {
-    setHistory(turns);
-    setOpening(null);
-    setNotice(message);
-    setStage("text");
-  }, []);
+  const switchToText = useCallback(
+    async (turns: Turn[], message: string | null) => {
+      // Make sure everything said by voice is on the server before the typed
+      // interview carries on from it. Saving is idempotent, so turns that
+      // were already saved are simply confirmed.
+      if (session && turns.length > 0) await saveTurns(session, turns).catch(() => {});
+      setHistory(turns);
+      setOpening(null);
+      setNotice(message);
+      setStage("text");
+    },
+    [session],
+  );
 
   const shownReward = reward ?? (stage === "intro" ? stored : null);
+  // During the interview the screen has a fixed height, so the conversation
+  // scrolls inside it and the answer box stays at the bottom, above the
+  // phone keyboard, however long the chat gets.
+  const interviewing = !shownReward && (stage === "voice" || stage === "text");
 
   return (
-    <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col bg-paper sm:my-6 sm:min-h-[calc(100dvh-3rem)] sm:overflow-hidden sm:rounded-[2rem] sm:border sm:border-line sm:shadow-xl">
+    <main
+      className={`mx-auto flex w-full max-w-md flex-col bg-paper sm:my-6 sm:overflow-hidden sm:rounded-[2rem] sm:border sm:border-line sm:shadow-xl ${
+        interviewing ? "h-dvh sm:h-[calc(100dvh-3rem)]" : "min-h-dvh sm:min-h-[calc(100dvh-3rem)]"
+      }`}
+    >
       {shownReward ? (
         <RewardScreen {...props} reward={shownReward} returning={!reward} />
       ) : stage === "intro" ? (
@@ -179,9 +195,9 @@ export function Experience(props: ExperienceProps) {
               maxFollowUps={props.maxFollowUps}
               maxSeconds={props.voiceMaxSeconds}
               onProgress={setQuestionNumber}
-              onFailed={(reason, turns) => switchToText(turns, FAILURE_NOTICES[reason])}
+              onFailed={(reason, turns) => void switchToText(turns, FAILURE_NOTICES[reason])}
               onEnded={(reason, turns) => {
-                if (reason === "switch") switchToText(turns, null);
+                if (reason === "switch") void switchToText(turns, null);
                 else setStage("email");
               }}
             />
@@ -201,9 +217,9 @@ export function Experience(props: ExperienceProps) {
             <EmailStage
               {...props}
               session={session}
-              onBack={() => switchToText([], "Answer at least one question to unlock your reward.")}
+              onBack={() => void switchToText([], "Answer at least one question to unlock your reward.")}
               onReward={(result) => {
-                store(result);
+                if (result.code) store(result);
                 setReward(result);
                 setStage("reward");
               }}
@@ -245,8 +261,13 @@ function Intro(
             className="object-cover"
           />
         ) : (
-          <div className="grid h-full place-items-center bg-[radial-gradient(circle_at_30%_20%,#ffe1d6,#f6efe4_60%)] px-8 text-center text-3xl font-semibold tracking-tight text-ink/80">
-            {props.productName}
+          <div
+            className={`grid h-full place-items-center bg-[radial-gradient(circle_at_30%_20%,#ffe1d6,#f6efe4_60%)] px-8 pt-14 pb-6 text-center font-semibold tracking-tight text-ink/80 ${
+              props.productName.length > 40 ? "text-2xl" : "text-3xl"
+            }`}
+          >
+            {/* Clear of the brand label above, and clipped if the name is very long. */}
+            <span className="line-clamp-4">{props.productName}</span>
           </div>
         )}
         <div className="absolute top-4 left-4 rounded-full bg-paper/90 px-3 py-1.5 text-xs font-medium text-ink backdrop-blur">
@@ -414,6 +435,8 @@ function VoiceStage(props: {
     userCaption,
     questionNumber,
     answerCount,
+    audioBlocked,
+    resumeAudio,
     start,
     end,
     getLevel,
@@ -461,6 +484,15 @@ function VoiceStage(props: {
         >
           {connecting ? "Allow the microphone if your phone asks." : assistantCaption}
         </p>
+        {audioBlocked && status === "live" && (
+          <button
+            type="button"
+            onClick={resumeAudio}
+            className="mt-4 h-11 rounded-full bg-ink px-5 text-[15px] font-semibold text-paper"
+          >
+            Tap to hear {props.interviewerName}
+          </button>
+        )}
         {userCaption && (
           <p className="mt-4 animate-rise rounded-3xl bg-surface px-4 py-2.5 text-[15px] leading-snug text-ink-soft shadow-[0_1px_0_var(--color-line)]">
             <span className="sr-only">You said: </span>“{userCaption}”
@@ -597,6 +629,7 @@ function RewardScreen(props: ExperienceProps & { reward: StoredReward; returning
   const { reward } = props;
 
   const copy = async () => {
+    if (!reward.code) return;
     try {
       await navigator.clipboard.writeText(reward.code);
       setCopied(true);
@@ -605,6 +638,28 @@ function RewardScreen(props: ExperienceProps & { reward: StoredReward; returning
       // Clipboard blocked: the code is selectable on screen.
     }
   };
+
+  // This email already claimed the reward on an earlier visit. The code went
+  // to that inbox and is deliberately not shown again here.
+  if (!reward.code) {
+    return (
+      <div className="flex flex-1 flex-col px-5 pt-[max(2.5rem,env(safe-area-inset-top))] pb-[max(1.25rem,env(safe-area-inset-bottom))]">
+        <div className="grid size-14 animate-pop place-items-center rounded-full bg-accent-soft text-accent-ink">
+          <Gift className="size-7" aria-hidden="true" />
+        </div>
+        <h1 className="mt-5 text-[1.7rem] leading-[1.15] font-semibold tracking-tight text-balance">
+          You&apos;ve already claimed this one
+        </h1>
+        <p className="mt-2 text-[15px] leading-snug text-ink-soft">
+          {reward.email} already received a code for {reward.rewardHeadline} from {props.brandName}. Look for
+          our email in that inbox. Thanks for sharing your thoughts again.
+        </p>
+        <p className="mt-auto pt-8 text-center text-xs text-muted">
+          Powered by <span className="font-semibold text-ink-soft">DAP Link</span>
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-1 flex-col px-5 pt-[max(2.5rem,env(safe-area-inset-top))] pb-[max(1.25rem,env(safe-area-inset-bottom))]">

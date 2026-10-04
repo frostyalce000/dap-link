@@ -45,6 +45,27 @@ export async function saveTurns(sessionId: string, turns: IncomingTurn[]): Promi
     });
 }
 
+/**
+ * Ceilings for one interview's transcript. A one-minute interview uses a
+ * small fraction of these; they exist so a scripted client cannot fill the
+ * database or inflate every later AI call that reads the transcript.
+ */
+export const TRANSCRIPT_LIMITS = { turns: 60, characters: 20_000 };
+
+export async function assertTranscriptRoom(sessionId: string, incoming: IncomingTurn[]): Promise<void> {
+  const [usage] = await db
+    .select({
+      turns: sql<number>`count(*)::int`,
+      characters: sql<number>`coalesce(sum(length(${transcriptTurns.text})), 0)::int`,
+    })
+    .from(transcriptTurns)
+    .where(eq(transcriptTurns.sessionId, sessionId));
+  const added = incoming.reduce((sum, t) => sum + t.text.length, 0);
+  if (usage!.turns + incoming.length > TRANSCRIPT_LIMITS.turns || usage!.characters + added > TRANSCRIPT_LIMITS.characters) {
+    throw new ApiError(413, "transcript_full", "This interview has reached its length limit. Finish up to get your reward.");
+  }
+}
+
 export async function getTurns(sessionId: string): Promise<TranscriptTurn[]> {
   return db
     .select()

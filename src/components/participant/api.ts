@@ -81,7 +81,8 @@ export function sendChat(
 }
 
 export type RewardResult = {
-  code: string;
+  /** Null when this email already claimed the reward on an earlier visit. */
+  code: string | null;
   rewardHeadline: string;
   instructions: string;
   alreadyClaimed: boolean;

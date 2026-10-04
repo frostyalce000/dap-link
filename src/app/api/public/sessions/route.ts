@@ -26,8 +26,6 @@ export const POST = route(async (request: Request) => {
   const ipHash = hashIp(getClientIp(request.headers));
   const perIp = await rateLimit(`start:${campaign.id}:${ipHash ?? "unknown"}`, LIMITS.sessionStartPerIp);
   if (!perIp.ok) throw tooManyRequests(perIp.retryAfterSeconds);
-  const perCampaign = await rateLimit(`start:${campaign.id}`, LIMITS.sessionStartPerCampaign);
-  if (!perCampaign.ok) throw tooManyRequests(perCampaign.retryAfterSeconds);
 
   const brief: InterviewBrief = {
     brandName,
@@ -37,9 +35,22 @@ export const POST = route(async (request: Request) => {
     questions: questions.map((q) => q.text),
   };
 
+  // Voice calls carry the real cost, so they have daily ceilings per
+  // campaign, per merchant and overall. Past one, the participant is offered
+  // the typed interview instead of being turned away.
+  let voiceAllowed = input.mode === "voice";
+  if (voiceAllowed) {
+    const ceilings = await Promise.all([
+      rateLimit(`voice:campaign:${campaign.id}`, LIMITS.voicePerCampaign),
+      rateLimit(`voice:merchant:${campaign.merchantId}`, LIMITS.voicePerMerchant),
+      rateLimit("voice:all", LIMITS.voiceTotal),
+    ]);
+    voiceAllowed = ceilings.every((c) => c.ok);
+  }
+
   // For a voice interview the realtime secret is requested now, while the
   // session is being written, so the call can connect one round trip sooner.
-  const voicePromise = input.mode === "voice" ? createVoiceSecret(brief) : null;
+  const voicePromise = voiceAllowed ? createVoiceSecret(brief) : null;
 
   const userAgent = request.headers.get("user-agent")?.slice(0, 300) ?? null;
   // Location is only recorded when the participant left that option on.

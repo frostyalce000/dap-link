@@ -6,6 +6,7 @@ import { refresh, revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { db } from "@/db";
+import { describeError, isUniqueViolation } from "@/db/errors";
 import { campaigns, questions } from "@/db/schema";
 import { analyzePendingSessions } from "@/lib/analysis/analyze-session";
 import { synthesizeCampaign } from "@/lib/analysis/synthesize-campaign";
@@ -170,7 +171,7 @@ export async function saveCampaign(
     });
   } catch (err) {
     // Two merchants saving the same new slug at once: the unique index decides.
-    if (err instanceof Error && /campaigns_slug_key/.test(err.message)) {
+    if (isUniqueViolation(err, "campaigns_slug_key")) {
       return {
         error: "Please fix the highlighted fields.",
         fieldErrors: { slug: "That link is already taken. Try another." },
@@ -209,7 +210,7 @@ export async function refreshInsights(campaignId: string): Promise<void> {
   try {
     await synthesizeCampaign(campaign.id);
   } catch (err) {
-    console.error("[analysis] manual refresh failed:", err instanceof Error ? err.message : "unknown");
+    console.error("[analysis] manual refresh failed:", describeError(err));
   }
   refresh();
 }

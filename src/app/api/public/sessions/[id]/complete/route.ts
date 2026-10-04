@@ -1,7 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { NextResponse, after } from "next/server";
 import { db } from "@/db";
-import { participants, sessions, transcriptTurns } from "@/db/schema";
+import { participants, rewards, sessions, transcriptTurns, type Campaign, type Reward } from "@/db/schema";
 import { analyzeSession } from "@/lib/analysis/analyze-session";
 import { refreshCampaignInsightsIfStale } from "@/lib/analysis/synthesize-campaign";
 import { env } from "@/lib/env";
@@ -18,11 +18,29 @@ import { completeSchema } from "@/lib/validation";
 export const maxDuration = 60;
 
 /**
+ * What the participant's screen gets. When the email already holds a reward
+ * on this campaign from an earlier visit, the code itself is withheld: it was
+ * sent to that inbox, and returning it here would let anyone who knows an
+ * email address read that person's code.
+ */
+function rewardResponse(campaign: Campaign, reward: Reward | undefined, alreadyClaimed: boolean) {
+  return NextResponse.json({
+    code: alreadyClaimed ? null : (reward?.code ?? null),
+    rewardHeadline: campaign.rewardHeadline,
+    instructions: campaign.rewardInstructions,
+    alreadyClaimed,
+    // Whether a copy is being emailed, so the screen only promises one when it is.
+    emailQueued: !alreadyClaimed && env.resendApiKey !== "",
+  });
+}
+
+/**
  * Finishes an interview: records the participant's email, issues their reward
  * and returns the code. Safe to call more than once; a repeat call returns the
- * code that was already issued.
+ * same result without recording anything new.
  */
 export const POST = route(async (request: Request, ctx: RouteContext<"/api/public/sessions/[id]/complete">) => {
+  const started = Date.now();
   const { id } = await ctx.params;
   const session = await authenticateSession(request, id);
 
@@ -36,6 +54,13 @@ export const POST = route(async (request: Request, ctx: RouteContext<"/api/publi
 
   const { email } = completeSchema.parse(await readJson(request));
   const { campaign } = await loadBrief(session);
+
+  // Already finished (a double tap or a retry): answer with what was decided
+  // the first time, whatever email this request carries.
+  if (session.status === "completed") {
+    const [reward] = await db.select().from(rewards).where(eq(rewards.sessionId, session.id)).limit(1);
+    return rewardResponse(campaign, reward, session.isDuplicate);
+  }
 
   // A reward is for feedback: there has to be at least one answer.
   const [{ answered }] = await db
@@ -75,20 +100,17 @@ export const POST = route(async (request: Request, ctx: RouteContext<"/api/publi
   // Everything below runs after the response has been sent, so the
   // participant sees their code without waiting for email or AI.
   after(async () => {
-    await deliverRewardEmail(reward.id);
-    if (await analyzeSession(session.id)) {
+    if (!alreadyClaimed) await deliverRewardEmail(reward.id);
+    const analysed = await analyzeSession(session.id);
+    // The campaign summary is the slowest step. It only runs here when there
+    // is clearly time left in this function; otherwise the next dashboard
+    // visit brings it up to date.
+    if (analysed && Date.now() - started < 25_000) {
       await refreshCampaignInsightsIfStale(campaign.id);
     }
     // Pick up any earlier emails that were held back by the provider's rate limit.
-    await deliverPendingRewardEmails(campaign.id, 3);
+    if (Date.now() - started < 40_000) await deliverPendingRewardEmails(campaign.id, 3);
   });
 
-  return NextResponse.json({
-    code: reward.code,
-    rewardHeadline: campaign.rewardHeadline,
-    instructions: campaign.rewardInstructions,
-    alreadyClaimed,
-    // Whether a copy is being emailed, so the screen only promises one when it is.
-    emailQueued: !alreadyClaimed && env.resendApiKey !== "",
-  });
+  return rewardResponse(campaign, reward, alreadyClaimed);
 });

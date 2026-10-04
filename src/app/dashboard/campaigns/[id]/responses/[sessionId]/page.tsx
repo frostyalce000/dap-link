@@ -163,7 +163,9 @@ export default async function ResponsePage(
               <p className="mt-2 text-sm text-muted">
                 {session.isDuplicate
                   ? "Repeat responses aren't analysed."
-                  : session.analysisStatus === "failed"
+                  : session.analysisStatus === "failed" && session.analysisAttempts >= 3
+                    ? "This response couldn't be analysed after three attempts. The transcript is still here."
+                    : session.analysisStatus === "failed"
                     ? "Analysis failed. It will be retried the next time you open the campaign."
                     : "This response is being analysed. Refresh in a few seconds."}
               </p>
@@ -223,19 +225,25 @@ export default async function ResponsePage(
           <Card className="p-5">
             <h2 className="text-base font-semibold">Reward and consent</h2>
             <dl className="mt-3 space-y-2 text-sm">
-              <Row label="Code issued" value={<span className="font-mono">{response.rewardCode ?? "–"}</span>} />
-              <Row
-                label="Email copy"
-                value={
-                  response.rewardEmailStatus === "sent"
-                    ? "Sent"
-                    : response.rewardEmailStatus === "failed"
-                      ? "Could not be sent"
-                      : response.rewardEmailStatus === "skipped"
-                        ? "Not sent"
-                        : "Sending"
-                }
-              />
+              {session.isDuplicate ? (
+                <Row label="Reward" value="Given in their earlier response" />
+              ) : (
+                <>
+                  <Row label="Code issued" value={<span className="font-mono">{response.rewardCode ?? "–"}</span>} />
+                  <Row
+                    label="Email copy"
+                    value={
+                      response.rewardEmailStatus === "sent"
+                        ? "Sent"
+                        : response.rewardEmailStatus === "failed"
+                          ? "Could not be sent"
+                          : response.rewardEmailStatus === "skipped"
+                            ? "Not sent"
+                            : "Sending"
+                    }
+                  />
+                </>
+              )}
               {consent && (
                 <>
                   <Row label="Consent given" value={formatDateTime(consent.grantedAt)} />

@@ -56,8 +56,12 @@ export const LIMITS = {
    * carriers put many real people behind one address.
    */
   sessionStartPerIp: { limit: 60, windowSeconds: 60 * 60 },
-  /** Total new interviews on one campaign, as a spend safety net. */
-  sessionStartPerCampaign: { limit: 3000, windowSeconds: 24 * 60 * 60 },
+  // Voice calls are the costly part, so they have their own ceilings: per
+  // campaign, per merchant and across the whole app. Past a ceiling the
+  // participant is offered the typed interview instead of an error.
+  voicePerCampaign: { limit: 1500, windowSeconds: 24 * 60 * 60 },
+  voicePerMerchant: { limit: 2000, windowSeconds: 24 * 60 * 60 },
+  voiceTotal: { limit: 5000, windowSeconds: 24 * 60 * 60 },
   chatPerSession: { limit: 40, windowSeconds: 10 * 60 },
   turnsPerSession: { limit: 200, windowSeconds: 10 * 60 },
   completePerSession: { limit: 10, windowSeconds: 60 * 60 },

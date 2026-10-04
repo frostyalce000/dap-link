@@ -57,6 +57,7 @@ export async function deliverRewardEmail(rewardId: string): Promise<void> {
     rewardHeadline: details.rewardHeadline,
     code: details.code,
     instructions: details.instructions,
+    idempotencyKey: `reward-${rewardId}`,
   });
 
   const outOfAttempts = claimed.attempts >= MAX_EMAIL_ATTEMPTS;

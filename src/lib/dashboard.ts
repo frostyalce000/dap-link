@@ -154,6 +154,7 @@ export async function listResponses(campaignId: string, limit: number) {
       geoCity: sessions.geoCity,
       geoCountry: sessions.geoCountry,
       analysisStatus: sessions.analysisStatus,
+      analysisAttempts: sessions.analysisAttempts,
       email: participants.email,
       sentiment: sessionInsights.sentiment,
       purchaseIntent: sessionInsights.purchaseIntent,

@@ -11,7 +11,7 @@ import {
   buildChatInstructions,
   buildChatOpening,
 } from "@/lib/interview/edna";
-import { getTurns, loadBrief, saveTurns } from "@/lib/interview/service";
+import { assertTranscriptRoom, getTurns, loadBrief, saveTurns } from "@/lib/interview/service";
 import { openai } from "@/lib/openai";
 import { authenticateSession } from "@/lib/public-session";
 import { LIMITS, rateLimit } from "@/lib/rate-limit";
@@ -19,7 +19,13 @@ import { chatSchema } from "@/lib/validation";
 
 export const maxDuration = 30;
 
+// Marks saved in the turn id, so they survive across requests without
+// another column: which replies were follow-ups, and which one ended it.
 const FOLLOW_UP_SUFFIX = "-followup";
+const DONE_SUFFIX = "-done";
+// Only the most recent turns are sent to the model, which bounds the cost of
+// every call however the conversation went.
+const HISTORY_SENT = 30;
 
 const replySchema = z.object({
   follow_up: z.boolean(),
@@ -53,6 +59,11 @@ export const POST = route(async (request: Request, ctx: RouteContext<"/api/publi
   const total = brief.questions.length;
   let turns = await getTurns(session.id);
 
+  // Once the interviewer has wrapped up, the conversation is over: any
+  // further message (or a retry) gets the closing line back.
+  const closing = turns.find((t) => t.role === "assistant" && t.clientTurnId.endsWith(DONE_SUFFIX));
+  if (closing) return NextResponse.json({ reply: closing.text, questionNumber: total, done: true });
+
   if (session.mode !== "text") {
     await db.update(sessions).set({ mode: "text" }).where(eq(sessions.id, session.id));
   }
@@ -71,63 +82,62 @@ export const POST = route(async (request: Request, ctx: RouteContext<"/api/publi
       const reply = turns.find((t) => t.role === "assistant" && t.seq > existing.seq);
       if (reply) return NextResponse.json({ reply: reply.text, questionNumber: null, done: false });
     } else {
-      const seq = (turns.at(-1)?.seq ?? -1) + 1;
-      await saveTurns(session.id, [
-        { clientTurnId: body.clientTurnId, seq, role: "user", text: body.message },
-      ]);
+      const turn = { clientTurnId: body.clientTurnId, seq: (turns.at(-1)?.seq ?? -1) + 1, role: "user" as const, text: body.message };
+      await assertTranscriptRoom(session.id, [turn]);
+      await saveTurns(session.id, [turn]);
       turns = await getTurns(session.id);
     }
   }
 
   const userTurns = turns.filter((t) => t.role === "user").length;
-  // Follow-ups are marked in the turn id when they are saved, so the count
-  // survives across requests without another column.
   const followUpsUsed = turns.filter((t) => t.clientTurnId.endsWith(FOLLOW_UP_SUFFIX)).length;
   const followUpsLeft = Math.max(0, MAX_FOLLOW_UPS - followUpsUsed);
   // Safety net so a conversation cannot run on indefinitely.
   const mustFinish = userTurns >= total + MAX_FOLLOW_UPS + 1;
 
-  const completion = await openai().chat.completions.create({
-    model: env.chatModel,
-    messages: [
-      { role: "system", content: buildChatInstructions(brief) },
-      ...turns.map((t) => ({ role: t.role, content: t.text }) as const),
-      {
-        role: "system" as const,
-        content:
-          followUpsLeft > 0
-            ? `Follow-ups left: ${followUpsLeft}. If the last answer was vague, use one now.`
-            : "No follow-ups left. Accept the answer as it is and move to the next question, or wrap up.",
+  const completion = await openai().chat.completions.create(
+    {
+      model: env.chatModel,
+      max_completion_tokens: 1500,
+      messages: [
+        { role: "system", content: buildChatInstructions(brief) },
+        ...turns.slice(-HISTORY_SENT).map((t) => ({ role: t.role, content: t.text }) as const),
+        {
+          role: "system" as const,
+          content:
+            followUpsLeft > 0
+              ? `Follow-ups left: ${followUpsLeft}. If the last answer was vague, use one now.`
+              : "No follow-ups left. Accept the answer as it is and move to the next question, or wrap up.",
+        },
+        ...(mustFinish
+          ? [{ role: "system" as const, content: "Wrap up now: thank them briefly and set done to true." }]
+          : "open" in body
+            ? [{ role: "system" as const, content: "The participant has switched from voice to typing. Carry on from where the conversation left off, without re-asking anything already answered." }]
+            : []),
+      ],
+      response_format: {
+        type: "json_schema",
+        json_schema: { name: "interviewer_reply", strict: true, schema: CHAT_REPLY_SCHEMA },
       },
-      ...(mustFinish
-        ? [{ role: "system" as const, content: "Wrap up now: thank them briefly and set done to true." }]
-        : "open" in body
-          ? [{ role: "system" as const, content: "The participant has switched from voice to typing. Carry on from where the conversation left off, without re-asking anything already answered." }]
-          : []),
-    ],
-    response_format: {
-      type: "json_schema",
-      json_schema: { name: "interviewer_reply", strict: true, schema: CHAT_REPLY_SCHEMA },
     },
-  });
+    // Must finish well inside this route's 30-second limit, retry included.
+    { timeout: 12_000, maxRetries: 1 },
+  );
 
   const content = completion.choices[0]?.message?.content;
   if (!content) throw new ApiError(502, "interviewer_unavailable", "EDNA didn't respond. Please try again.");
   const reply = replySchema.parse(JSON.parse(content));
+  const done = reply.done || mustFinish;
 
   const seq = (turns.at(-1)?.seq ?? -1) + 1;
+  const marker = done ? DONE_SUFFIX : reply.follow_up ? FOLLOW_UP_SUFFIX : "";
   await saveTurns(session.id, [
-    {
-      clientTurnId: `assistant-${seq}${reply.follow_up && !reply.done ? FOLLOW_UP_SUFFIX : ""}`,
-      seq,
-      role: "assistant",
-      text: reply.message,
-    },
+    { clientTurnId: `assistant-${seq}${marker}`, seq, role: "assistant", text: reply.message },
   ]);
 
   return NextResponse.json({
     reply: reply.message,
     questionNumber: Math.min(Math.max(reply.question_number, 1), total),
-    done: reply.done || mustFinish,
+    done,
   });
 });

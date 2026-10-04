@@ -80,6 +80,7 @@ export function useVoiceInterview(options: Options) {
   const [userCaption, setUserCaption] = useState("");
   const [questionNumber, setQuestionNumber] = useState(1);
   const [answerCount, setAnswerCount] = useState(0);
+  const [audioBlocked, setAudioBlocked] = useState(false);
 
   const optionsRef = useRef(options);
   useEffect(() => {
@@ -154,6 +155,10 @@ export function useVoiceInterview(options: Options) {
     const { questions, maxFollowUps } = optionsRef.current;
     const text = lastAssistantTextRef.current;
     if (!text || /[?？]/.test(text)) return false;
+    // A follow-up can be phrased as a request ("tell me more") rather than a question.
+    if (/\b(tell me|could you|can you|would you|share|describe|explain|say more|what|why|how)\b/i.test(text)) return false;
+    // The sign-off EDNA is asked to give thanks them and mentions the reward.
+    if (!/(thank|reward|appreciate|gracias|merci|danke|obrigad)/i.test(text)) return false;
     const askedAt = answersWhenLastAskedRef.current;
     const lastQuestionAnswered = askedAt !== null && answerCountRef.current > askedAt;
     const everythingAnswered = answerCountRef.current >= questions.length + maxFollowUps;
@@ -351,8 +356,10 @@ export function useVoiceInterview(options: Options) {
             lastAssistantTextRef.current = event.transcript;
             setAssistantCaption(event.transcript);
             recordTurn(itemId, "assistant", event.transcript);
+            // Only trusted to move one question ahead: a follow-up that happens
+            // to share words with a later question must not skip progress.
             const asked = matchQuestion(event.transcript, optionsRef.current.questions);
-            if (asked) advanceTo(asked);
+            if (asked && asked <= questionRef.current + 1) advanceTo(asked);
           }
           break;
         case "output_audio_buffer.started":
@@ -417,10 +424,20 @@ export function useVoiceInterview(options: Options) {
           const audio = audioRef.current;
           if (!audio) return;
           audio.srcObject = event.streams[0] ?? null;
-          void audio.play().catch(() => {});
+          // Some browsers refuse to start audio on their own; the screen then
+          // offers a button that starts it from a tap.
+          void audio.play().then(() => setAudioBlocked(false), () => setAudioBlocked(true));
         };
         pc.onconnectionstatechange = () => {
           if (pc.connectionState === "failed") fail("connection");
+          // "disconnected" can recover by itself; give it a few seconds.
+          if (pc.connectionState === "disconnected") {
+            timersRef.current.push(
+              setTimeout(() => {
+                if (pc.connectionState === "disconnected" || pc.connectionState === "failed") fail("connection");
+              }, 5000),
+            );
+          }
         };
         for (const track of stream.getAudioTracks()) pc.addTrack(track, stream);
 
@@ -432,6 +449,11 @@ export function useVoiceInterview(options: Options) {
           } catch {
             // Ignore anything that is not a JSON event.
           }
+        };
+        // The other side closing the channel (the call ended or dropped) moves
+        // the participant to typing instead of leaving them in silence.
+        dc.onclose = () => {
+          if (!overRef.current) fail("connection");
         };
         dc.onopen = () => {
           setStatus("live");
@@ -468,6 +490,8 @@ export function useVoiceInterview(options: Options) {
           const analyser = context.createAnalyser();
           analyser.fftSize = 256;
           context.createMediaStreamSource(stream).connect(analyser);
+          // Safari starts an AudioContext created outside a tap as suspended.
+          void context.resume().catch(() => {});
           audioContextRef.current = context;
           analyserRef.current = analyser;
         } catch {
@@ -479,6 +503,14 @@ export function useVoiceInterview(options: Options) {
     },
     [end, fail, handleEvent],
   );
+
+  /** Starts the interviewer's audio from a tap, when the browser blocked autoplay. */
+  const resumeAudio = useCallback(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    void audio.play().then(() => setAudioBlocked(false), () => setAudioBlocked(true));
+    void audioContextRef.current?.resume().catch(() => {});
+  }, []);
 
   /** Current microphone loudness from 0 to 1, for animation. */
   const getLevel = useCallback((): number => {
@@ -511,6 +543,8 @@ export function useVoiceInterview(options: Options) {
     userCaption,
     questionNumber,
     answerCount,
+    audioBlocked,
+    resumeAudio,
     start,
     end,
     getLevel,

@@ -18,6 +18,8 @@ export type RewardEmail = {
   rewardHeadline: string;
   code: string;
   instructions: string;
+  /** Sent with the request so the provider drops an accidental second send. */
+  idempotencyKey?: string;
 };
 
 /**
@@ -91,13 +93,16 @@ export async function sendRewardEmail(email: RewardEmail): Promise<EmailResult> 
   const resend = new Resend(env.resendApiKey);
   for (let attempt = 1; attempt <= SEND_ATTEMPTS; attempt++) {
     try {
-      const { error } = await resend.emails.send({
-        from: env.resendFrom,
-        to: email.to,
-        subject: `Your reward from ${email.brandName}: ${email.rewardHeadline}`,
-        html,
-        text,
-      });
+      const { error } = await resend.emails.send(
+        {
+          from: env.resendFrom,
+          to: email.to,
+          subject: `Your reward from ${email.brandName}: ${email.rewardHeadline}`,
+          html,
+          text,
+        },
+        email.idempotencyKey ? { idempotencyKey: email.idempotencyKey } : undefined,
+      );
       if (!error) return { status: "sent" };
       if (!isTemporary(error)) {
         console.error("[email] reward email rejected:", error.name);

@@ -1,6 +1,7 @@
 import "server-only";
 import { NextResponse } from "next/server";
 import { ZodError } from "zod";
+import { describeError } from "@/db/errors";
 
 /** An error that is safe to show to the caller. */
 export class ApiError extends Error {
@@ -44,7 +45,7 @@ export function route<Args extends unknown[]>(
           { status: 400 },
         );
       }
-      console.error("[api] unexpected error:", err instanceof Error ? err.name : "unknown", err instanceof Error ? err.message : "");
+      console.error("[api] unexpected error:", describeError(err));
       return NextResponse.json(
         { error: { code: "server_error", message: "Something went wrong on our side. Please try again." } },
         { status: 500 },

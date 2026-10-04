@@ -176,6 +176,41 @@ describe("analysis schema", () => {
   });
 });
 
+describe("rate limiting by network", () => {
+  it("treats every address in one IPv6 /64 as one visitor", async () => {
+    process.env.IP_HASH_SALT = "test-salt";
+    const { hashIp } = await import("@/lib/request");
+    expect(hashIp("2001:db8:1:2::5")).toBe(hashIp("2001:db8:1:2:ffff:ffff:ffff:9"));
+    expect(hashIp("2001:db8:1:2::5")).not.toBe(hashIp("2001:db8:1:3::5"));
+    expect(hashIp("::ffff:203.0.113.7")).toBe(hashIp("203.0.113.7"));
+    expect(hashIp("203.0.113.7")).not.toBe(hashIp("203.0.113.8"));
+    expect(hashIp(null)).toBeNull();
+  });
+});
+
+describe("database error handling", () => {
+  const queryError = () => {
+    const err = new Error("Failed query: insert into participants\nparams: someone@example.com");
+    err.name = "DrizzleQueryError";
+    (err as Error & { cause: unknown }).cause = { code: "23505", constraint_name: "campaigns_slug_key" };
+    return err;
+  };
+
+  it("never puts query parameters in the log line", async () => {
+    const { describeError } = await import("@/db/errors");
+    const line = describeError(queryError());
+    expect(line).toBe("DrizzleQueryError pg 23505 campaigns_slug_key");
+    expect(line).not.toContain("example.com");
+  });
+
+  it("recognises a unique violation by constraint name", async () => {
+    const { isUniqueViolation } = await import("@/db/errors");
+    expect(isUniqueViolation(queryError(), "campaigns_slug_key")).toBe(true);
+    expect(isUniqueViolation(queryError(), "rewards_session_key")).toBe(false);
+    expect(isUniqueViolation(new Error("other"), "campaigns_slug_key")).toBe(false);
+  });
+});
+
 describe("formatting", () => {
   it("formats durations, percentages and money", () => {
     expect(formatDuration(42)).toBe("42s");

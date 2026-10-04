@@ -81,6 +81,7 @@ export function TextInterview({ session, opening, history, notice, onProgress, o
     const message = draft.trim();
     if (!message || waiting || finished) return;
     setDraft("");
+    if (inputRef.current) inputRef.current.style.height = "";
     setMessages((current) => [...current, { id: `user-${current.length}`, role: "user", text: message }]);
     onAnswered();
     void request({ clientTurnId: crypto.randomUUID(), message });
@@ -153,7 +154,13 @@ export function TextInterview({ session, opening, history, notice, onProgress, o
           id="answer"
           ref={inputRef}
           value={draft}
-          onChange={(event) => setDraft(event.target.value)}
+          onChange={(event) => {
+            setDraft(event.target.value);
+            // Grows with the text where CSS field-sizing isn't supported (Safari).
+            const box = event.target;
+            box.style.height = "auto";
+            box.style.height = `${Math.min(box.scrollHeight, 128)}px`;
+          }}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
               event.preventDefault();

@@ -1,6 +1,7 @@
 import "server-only";
-import { and, asc, eq, gt, isNull, lt, lte, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, gte, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { db } from "@/db";
+import { describeError } from "@/db/errors";
 import {
   answers,
   campaigns,
@@ -194,7 +195,7 @@ ${transcript || "(the participant said nothing)"}`;
     });
     return true;
   } catch (err) {
-    console.error("[analysis] session analysis failed:", err instanceof Error ? err.message : "unknown");
+    console.error("[analysis] session analysis failed:", describeError(err));
     await db
       .update(sessions)
       .set({ analysisStatus: "failed" })
@@ -211,6 +212,19 @@ ${transcript || "(the participant said nothing)"}`;
  */
 export async function analyzePendingSessions(campaignId: string, max = 5): Promise<number> {
   const staleBefore = new Date(Date.now() - STALE_AFTER_MS);
+  // A run that died on its last allowed attempt would otherwise sit in
+  // "processing" for ever.
+  await db
+    .update(sessions)
+    .set({ analysisStatus: "failed" })
+    .where(
+      and(
+        eq(sessions.campaignId, campaignId),
+        eq(sessions.analysisStatus, "processing"),
+        lt(sessions.analysisStartedAt, staleBefore),
+        gte(sessions.analysisAttempts, MAX_ANALYSIS_ATTEMPTS),
+      ),
+    );
   const pending = await db
     .select({ id: sessions.id })
     .from(sessions)

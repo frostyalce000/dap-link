@@ -15,7 +15,24 @@ export function getClientIp(headers: Headers): string | null {
  */
 export function hashIp(ip: string | null): string | null {
   if (!ip) return null;
-  return createHash("sha256").update(`${env.ipHashSalt}:${ip}`).digest("hex").slice(0, 32);
+  return createHash("sha256").update(`${env.ipHashSalt}:${networkOf(ip)}`).digest("hex").slice(0, 32);
+}
+
+/**
+ * The unit rate limits apply to. An IPv6 host usually controls a whole /64
+ * block, so limiting single addresses would be trivial to dodge; the first
+ * four groups are used instead.
+ */
+function networkOf(ip: string): string {
+  const address = ip.replace(/^::ffff:/i, "");
+  if (!address.includes(":")) return address;
+  const [head = "", tail = ""] = address.toLowerCase().split("::");
+  const left = head ? head.split(":") : [];
+  const right = tail ? tail.split(":") : [];
+  const groups = address.includes("::")
+    ? [...left, ...Array(Math.max(0, 8 - left.length - right.length)).fill("0"), ...right]
+    : left;
+  return groups.slice(0, 4).map((g) => g.replace(/^0+(?=.)/, "")).join(":") + "::/64";
 }
 
 function decodeHeader(value: string | null): string | null {

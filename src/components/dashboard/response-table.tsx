@@ -66,9 +66,11 @@ export function ResponseTable({ campaignId, responses }: { campaignId: string; r
                 </>
               ) : (
                 <td colSpan={4} className="py-3 text-muted">
-                  {response.analysisStatus === "failed"
-                    ? "Analysis failed. It will be retried."
-                    : "Being analysed…"}
+                  {response.analysisStatus !== "failed"
+                    ? "Being analysed…"
+                    : response.analysisAttempts >= 3
+                      ? "Couldn't be analysed."
+                      : "Analysis failed. It will be retried."}
                 </td>
               )}
             </tr>

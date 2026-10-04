@@ -95,12 +95,13 @@ Each of those is **claimed with a conditional `UPDATE`** before it runs, so conc
 
 | Concern | How it is handled |
 |---|---|
-| Duplicate submissions | Unique indexes on `(campaign, participant)` and on `session` in `rewards`. A double tap, a retry, or the same person returning all get the one original code. Repeat responses are flagged and left out of analytics. |
-| Rate limiting | Fixed-window counters in Postgres (one atomic upsert), per IP, per session and per campaign. Works across serverless instances with no extra service. |
+| Duplicate submissions | Unique indexes on `(campaign, participant)` and on `session` in `rewards`. A double tap or a retry returns the same code. The same email coming back does not get a second code, and the screen does not show the first one again (it was emailed), so knowing someone's email never reveals their code. Repeat responses are flagged and left out of analytics. |
+| Rate limiting | Fixed-window counters in Postgres (one atomic upsert), per network address (IPv6 grouped by /64), per session and per merchant. Works across serverless instances with no extra service. |
+| Transcript size | At most 60 turns and 20,000 characters per interview, and only the latest 30 turns are sent to the model, so a scripted client cannot fill the database or inflate AI costs. Typed transcripts can only be written by the chat endpoint. |
 | Public endpoints | Participants have no account. Each interview gets a random bearer token; only its hash is stored, compared in constant time. |
 | AI/API failures | OpenAI calls retry with backoff. Voice failure falls back to text. Failed analysis is retried up to 3 times. A failed chat message can be retried without creating a duplicate. |
 | Email rate limits | Temporary failures stay "pending" and are retried later; permanent ones are marked failed. The code is always on screen first, so email never blocks the reward. |
-| Spend | A daily cap on new interviews per campaign, a hard time limit on voice calls, and a cap on reply length. |
+| Spend | Daily ceilings on voice calls per campaign, per merchant and across the app; past one, participants are offered the typed interview instead of an error. Plus a time limit on voice calls and caps on reply length. |
 
 ---
 
@@ -214,7 +215,7 @@ Then sign up at `/signup`, create a link, and open it.
 
 ## Testing
 
-- **Unit tests** (`npm test`, 20 tests): slugs, input validation, reward codes, the interviewer brief, voice progress matching, analysis schema leniency, formatting.
+- **Unit tests** (`npm test`, 23 tests): slugs, input validation, reward codes, the interviewer brief, voice progress matching, analysis schema leniency, network grouping for rate limits, log-safe database errors, formatting.
 - **End-to-end, typed:** `scripts/smoke-text-interview.mjs` runs a full interview against a running server, then checks that completing twice returns the same code and that a wrong token is rejected.
 - **End-to-end, voice:** run in headless Chrome with a generated speech file as the microphone. The full flow (connect, three spoken answers, sign-off, email, code) completed in about 60 seconds on repeated runs.
 - **Concurrency:** `scripts/load-test.mjs` simulates participants going through a campaign at once.
@@ -239,7 +240,10 @@ This measures the application and database under concurrent load. It is not a te
 - **Sign-up skips email verification.** Accounts are created pre-confirmed so a reviewer can get straight in. Verification and password reset are a configuration change in Supabase Auth plus two pages.
 - **Reward emails under a burst.** The email provider allows about two sends a second. In the 100-participant burst, 60 emails went out immediately and the rest were held as pending for the retry pass. They are delivered, but late. A production version would use a queue with a controlled send rate.
 - **Background work uses `after()`, not a queue.** It is retried and self-healing, but its retry trigger is the next completion or dashboard visit, not a timer.
-- **Voice sessions can't be capped server-side.** The call runs between the browser and OpenAI. The client enforces a three-minute limit and the secret expires in two minutes, but a modified client could hold a call open longer. The daily per-campaign cap bounds the cost.
+- **Voice calls are not yet ended from the server.** The call runs between the browser and OpenAI. The client enforces a three-minute limit and the secret expires in two minutes, but a modified client could hold a call open longer or change the interviewer's instructions over the data channel. The daily voice ceilings bound the cost. The fix is OpenAI's server-side call control, which lets the server watch and hang up the call.
+- **A scripted client can still claim a voice reward with one invented answer.** Voice transcripts are written by the browser, because the audio never reaches our server. Rate limits per address bound how far this goes; server-side call control would close it.
+- **No bot check on the public link.** A CAPTCHA-style check (e.g. Cloudflare Turnstile) before starting would stop automated traffic before any rate limit is needed.
+- **Location sharing is on by default.** It is disclosed in the sentence above the start buttons and can be switched off under Details. In a strict GDPR reading it should be off until ticked; that is a one-line change, at the cost of less location data for merchants.
 - **Discount codes are generated here**, not created in a store. `RewardSource` in `src/lib/rewards.ts` is the seam for a Shopify implementation.
 - **The campaign summary reads up to the latest 400 responses** in one model call. Beyond that it needs a map-reduce pass.
 - **No precise geolocation and no audio storage**, by scope.
